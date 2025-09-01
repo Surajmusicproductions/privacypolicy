@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy - Loopstation Pro</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      margin: 40px auto;
+      max-width: 800px;
+      padding: 0 20px;
+      color: #333;
+    }
+    h1, h2 {
+      color: #222;
+    }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy for Loopstation Pro</h1>
+  <p><strong>Last updated:</strong> September 1, 2025</p>
+
+  <h2>1. Information We Collect</h2>
+  <p>
+    Loopstation Pro requires access to your device's microphone in order to
+    record audio for looping and playback. We do not collect, store, or transmit
+    any audio recordings or personal data to our servers.
+  </p>
+
+  <h2>2. How We Use Information</h2>
+  <p>
+    All audio input is processed locally on your device. No audio or personal
+    data is shared, uploaded, or stored externally.
+  </p>
+
+  <h2>3. Data Sharing</h2>
+  <p>
+    We do not share your information with third parties. Loopstation Pro does
+    not include advertisements or external tracking services.
+  </p>
+
+  <h2>4. Permissions</h2>
+  <p>
+    The app requires the following Android permission:
+    <ul>
+      <li><strong>RECORD_AUDIO</strong>: To capture audio input for looping.</li>
+    </ul>
+  </p>
+
+  <h2>5. Security</h2>
+  <p>
+    All audio data remains on your device. We do not access, save, or transmit
+    any of your recordings or personal information.
+  </p>
+
+  <h2>6. Children’s Privacy</h2>
+  <p>
+    Our app is safe for all ages but is not specifically targeted towards
+    children under 13.
+  </p>
+
+  <h2>7. Changes to This Policy</h2>
+  <p>
+    We may update this Privacy Policy from time to time. Updates will be
+    reflected with a new "Last updated" date.
+  </p>
+
+  <h2>8. Contact Us</h2>
+  <p>
+    If you have any questions about this Privacy Policy, please contact us at:
+    <br />
+    📧 <a href="mailto:surajpathare034@gmail.com">surajpathare034@gmail.com</a>
+  </p>
+</body>
+</html>
