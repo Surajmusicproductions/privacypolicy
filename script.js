@@ -1,5 +1,4 @@
-// script.js
-
+// script.js (patched)
 // Master audio context and global variables
 let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 let micStream = null, micSource = null;
@@ -21,17 +20,16 @@ const bpmLabel = document.getElementById('bpmLabel');
 // Flag: use AudioWorklet if available
 let useWorklet = false;
 if (audioCtx.audioWorklet) {
+  // begin loading the module; useWorklet will be set on success
   audioCtx.audioWorklet.addModule('recorder-processor.js')
-    .then(() => { useWorklet = true; console.log('AudioWorklet loaded'); })
-    .catch(err => { console.warn('AudioWorklet not available, using fallback', err); });
+    .then(() => { useWorklet = true; console.log('AudioWorklet module loaded'); })
+    .catch(err => { useWorklet = false; console.warn('AudioWorklet not available', err); });
 }
 
-// Display messages for user (permissions, etc.)
+// UI message helpers
 function showMsg(msg, color = '#ff4444') {
   let el = document.getElementById('startMsg');
-  if (!el) {
-    el = document.createElement('div'); el.id = 'startMsg'; document.body.prepend(el);
-  }
+  if (!el) { el = document.createElement('div'); el.id = 'startMsg'; document.body.prepend(el); }
   el.innerHTML = msg;
   el.style.cssText = `
     display:block; color:${color}; background:#111a22cc;
@@ -40,65 +38,64 @@ function showMsg(msg, color = '#ff4444') {
     z-index:1000; text-align:center;
   `;
 }
-function hideMsg() {
-  let el = document.getElementById('startMsg');
-  if (el) el.style.display = 'none';
-}
+function hideMsg() { const el = document.getElementById('startMsg'); if (el) el.style.display = 'none'; }
 
-// Ensure microphone access and set up effects chain
+// Ensure mic + FX graph is ready
 async function ensureMic() {
-  if (!micStream) {
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation: true, noiseSuppression: true, autoGainControl: true
-      }});
-    } catch (e) {
-      showMsg("❌ Microphone access denied!<br>Enable permission in app settings.", "#ff4444");
-      throw e;
-    }
-    audioCtx.resume();
-    micSource = audioCtx.createMediaStreamSource(micStream);
-
-    // Create a delay with feedback
-    delayNode = audioCtx.createDelay(2.0);
-    delayGain = audioCtx.createGain();
-    delayNode.delayTime.value = 0;
-    delayGain.gain.value = 0.5;
-    micSource.connect(delayNode);
-    delayNode.connect(delayGain);
-    delayGain.connect(delayNode);
-
-    // Create a reverb (convolver) with an impulse buffer
-    convolver = audioCtx.createConvolver();
-    convolver.buffer = createReverbImpulse(3.0, 2.0);
-    convolver.normalize = true;
-    delayNode.connect(convolver);
-
-    // Dry/Wet gains for reverb mix
-    dryGain = audioCtx.createGain();
-    wetGain = audioCtx.createGain();
-    dryGain.gain.value = 1;
-    wetGain.gain.value = 0;
-    micSource.connect(dryGain);
-    convolver.connect(wetGain);
-
-    // Route dry and wet to a common MediaStreamDestination for fallback recording
-    mixDest = audioCtx.createMediaStreamDestination();
-    dryGain.connect(mixDest);
-    wetGain.connect(mixDest);
-    processedStream = mixDest.stream;
-
-    hideMsg();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showMsg("❌ Microphone not supported on this device/browser!");
+    throw new Error("getUserMedia not supported.");
   }
+  if (micStream) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true
+    }});
+  } catch (e) {
+    showMsg("❌ Microphone access denied!<br>Enable permission in app settings.", "#ff4444");
+    throw e;
+  }
+  audioCtx.resume();
+  micSource = audioCtx.createMediaStreamSource(micStream);
+
+  // Delay + feedback nodes
+  delayNode = audioCtx.createDelay(2.0);
+  delayGain = audioCtx.createGain();
+  delayNode.delayTime.value = 0;
+  delayGain.gain.value = 0.5;
+  micSource.connect(delayNode);
+  delayNode.connect(delayGain);
+  delayGain.connect(delayNode);
+
+  // Reverb (convolver)
+  convolver = audioCtx.createConvolver();
+  convolver.buffer = createReverbImpulse(3.0, 2.0);
+  convolver.normalize = true;
+  delayNode.connect(convolver);
+
+  // Dry/Wet gains
+  dryGain = audioCtx.createGain();
+  wetGain = audioCtx.createGain();
+  dryGain.gain.value = 1;
+  wetGain.gain.value = 0;
+  micSource.connect(dryGain);
+  convolver.connect(wetGain);
+
+  // Destination stream (for MediaRecorder fallback)
+  mixDest = audioCtx.createMediaStreamDestination();
+  dryGain.connect(mixDest);
+  wetGain.connect(mixDest);
+  processedStream = mixDest.stream;
+
+  hideMsg();
 }
 
-// Create an impulse response for reverb (decaying noise)
 function createReverbImpulse(durationSeconds, decayFactor) {
   const sampleRate = audioCtx.sampleRate;
   const length = sampleRate * durationSeconds;
   const impulse = audioCtx.createBuffer(2, length, sampleRate);
   for (let channel = 0; channel < 2; channel++) {
-    let buffer = impulse.getChannelData(channel);
+    const buffer = impulse.getChannelData(channel);
     for (let i = 0; i < length; i++) {
       const t = i / length;
       buffer[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, decayFactor);
@@ -107,11 +104,11 @@ function createReverbImpulse(durationSeconds, decayFactor) {
   return impulse;
 }
 
-// Universal handlers for taps and holds (including touch)
+// basic tap/hold helpers (touch-friendly)
 function addTapHandler(btn, handler) {
   if (!btn) return;
   btn.addEventListener('click', handler);
-  btn.addEventListener('touchstart', e => { e.preventDefault(); handler(e); }, { passive: false });
+  btn.addEventListener('touchstart', function(e) { e.preventDefault(); handler(e); }, { passive: false });
 }
 function addHoldHandler(btn, onStart, onEnd) {
   let hold = false;
@@ -123,155 +120,113 @@ function addHoldHandler(btn, onStart, onEnd) {
   btn.addEventListener('touchcancel', e => { if (hold) onEnd(e); hold = false; }, { passive: false });
 }
 
-// Looper class encapsulates one track (1=master, 2-4=slaves)
+// --- ADD MISSING addKnobDragHandler (copied from previous working version) ---
+function addKnobDragHandler(knobElem, getValue, setValue, display, indicator, min=0, max=100, angleScale=2.7, units='%') {
+  let dragging=false, startY=0, startValue=0;
+  function dragStart(e) {
+    e.preventDefault();
+    dragging=true;
+    startY = e.touches ? e.touches[0].clientY : e.clientY;
+    startValue = getValue();
+    document.addEventListener('mousemove', dragMove);
+    document.addEventListener('mouseup', dragEnd);
+    document.addEventListener('touchmove', dragMove, { passive: false });
+    document.addEventListener('touchend', dragEnd, { passive: false });
+  }
+  function dragMove(e) {
+    if (!dragging) return;
+    e.preventDefault();
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    let newVal = Math.max(min, Math.min(max, Math.round(startValue + (startY - clientY))));
+    setValue(newVal);
+    if (display) display.textContent = newVal + units;
+    if (indicator) indicator.style.transform = 'translateX(-50%) rotate(' + ((newVal - 50) * angleScale) + 'deg)';
+  }
+  function dragEnd(e) {
+    dragging = false;
+    document.removeEventListener('mousemove', dragMove);
+    document.removeEventListener('mouseup', dragEnd);
+    document.removeEventListener('touchmove', dragMove);
+    document.removeEventListener('touchend', dragEnd);
+  }
+  if (!knobElem) return;
+  knobElem.addEventListener('mousedown', dragStart);
+  knobElem.addEventListener('touchstart', dragStart, { passive: false });
+}
+
+// ===== LOOPER CLASS (tracks) =====
 class Looper {
   constructor(index, recordKey, stopKey) {
     this.index = index;
     this.recordKey = recordKey;
     this.stopKey = stopKey;
-    this.state = 'ready';
-    this.uiDisabled = false;
 
-    // UI elements for this looper
+    // UI
     this.mainBtn = document.getElementById('mainLooperBtn' + index);
     this.stopBtn = document.getElementById('stopBtn' + index);
     this.looperIcon = document.getElementById('looperIcon' + index);
     this.ledRing = document.getElementById('progressBar' + index);
     this.stateDisplay = document.getElementById('stateDisplay' + index);
 
-    // Loop data
-    this.loopBuffer = null;           // Combined audio buffer for loop playback
-    this.loopDuration = 0;            // Duration in seconds
-    this.loopStartTime = 0;           // AudioContext.currentTime when loop playback started
-    this.baseBuffer = null;           // Original (base) loop audio (for undo)
-    this.overdubBuffers = [];         // Array of Float32Arrays for each overdub layer
+    // state & buffers
+    this.state = 'ready';
+    this.uiDisabled = false;
+    this.loopBuffer = null;     // full mixed buffer for playback (AudioBuffer)
+    this.baseBuffer = null;     // original recorded base AudioBuffer (AudioBuffer)
+    this.overdubBuffers = [];   // array of Float32Array layers (for undo)
+    this.loopDuration = 0;
+    this.loopStartTime = 0;
 
-    // For MediaRecorder fallback
+    // recorder placeholders
     this.mediaRecorder = null;
     this.chunks = [];
+    this.recorder = null;            // AudioWorkletNode (created lazily)
+    this.recorderConnected = false;
 
-    // For AudioWorkletRecorder
-    if (useWorklet) {
-      // Create a recorder node (no outputs, mono channel)
-      this.recorder = new AudioWorkletNode(audioCtx, 'recorder-processor', {
-        numberOfInputs: 1,
-        numberOfOutputs: 0,
-        channelCount: 1
-      });
-      // Handle incoming recorded data
-      this.recorder.port.onmessage = async (e) => {
-        const data = e.data;
-        if (data.cmd === 'dump') {
-          // Received recorded Float32 data
-          const channels = data.channels; // array of Float32Array per channel
-          if (channels.length === 0) {
-            // No data recorded (empty)
-            this._finalizeRecording(new Float32Array(0));
-          } else {
-            let raw = channels[0]; // we use mono (first channel)
-            const firstFrame = data.firstBlockFrame;
-            const startFrame = data.startedAtFrame;
-            const stopFrame = data.stoppedAtFrame;
-            // Trim leading/trailing silence from first/last partial blocks
-            const startOffset = Math.max(0, startFrame - firstFrame);
-            const endOffset = raw.length - (stopFrame - firstFrame);
-            const sliced = raw.slice(startOffset, endOffset);
-            this._finalizeRecording(sliced);
-          }
-        }
-      };
-      this.recorderConnected = false;
-    }
-
-    // Disable slave tracks until master loop set
+    // config
+    this.divider = (index >=2 && dividerSelectors[index]) ? parseFloat(dividerSelectors[index].value) : 1;
     if (index >= 2 && dividerSelectors[index]) {
-      this.divider = parseFloat(dividerSelectors[index].value);
-      dividerSelectors[index].addEventListener('change', e => {
-        this.divider = parseFloat(e.target.value);
-      });
+      dividerSelectors[index].addEventListener('change', e => { this.divider = parseFloat(e.target.value); });
       this.setDisabled(true);
-    } else {
-      this.divider = 1;
     }
 
-    // Hook up UI buttons
-    addTapHandler(this.mainBtn, async () => {
-      await ensureMic();  // ensure audio graph exists
-      await this.handleMainButton();
-    });
+    // UI events
+    addTapHandler(this.mainBtn, async () => { await ensureMic(); await this.handleMainButton(); });
     addHoldHandler(this.stopBtn,
+      () => { if (this.state === 'ready') return; this.holdTimer = setTimeout(()=>{ this.clearLoop(); this.holdTimer = null; }, 2000); },
       () => {
-        if (this.state === 'ready') return;
-        // Long hold: clear loop after 2s
-        this.holdTimer = setTimeout(() => { this.clearLoop(); this.holdTimer = null; }, 2000);
-      },
-      () => {
-        if (this.holdTimer) {
-          clearTimeout(this.holdTimer);
-          this.holdTimer = null;
-          // Short tap: stop or resume
-          if (this.state === 'playing' || this.state === 'overdub') {
-            this.stopPlayback();
-          } else if (this.state === 'stopped') {
-            this.resumePlayback();
-          }
+        if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer=null;
+          if (this.state === 'playing' || this.state === 'overdub') this.stopPlayback();
+          else if (this.state === 'stopped') this.resumePlayback();
         }
-      }
-    );
+      });
 
     this.updateUI();
     this.setRingProgress(0);
   }
 
-  // UI helpers (LED ring color, progress, icon, text)
   setLED(color) {
     const colors = { green:'#22c55e', red:'#e11d48', orange:'#f59e0b', gray:'#6b7280' };
     this.ledRing.style.stroke = colors[color] || '#fff';
-    this.ledRing.style.filter = (color === 'gray')
-      ? 'none'
-      : `drop-shadow(0 0 8px ${colors[color]}88)`;
+    this.ledRing.style.filter = (color === 'gray') ? 'none' : `drop-shadow(0 0 8px ${colors[color]}88)`;
   }
   setRingProgress(ratio) {
-    const R = 42, C = 2 * Math.PI * R;
-    const offset = C * (1 - ratio);
-    this.ledRing.style.strokeDasharray = C;
-    this.ledRing.style.strokeDashoffset = offset;
+    const RADIUS = 42, CIRCUM = 2 * Math.PI * RADIUS;
+    this.ledRing.style.strokeDasharray = CIRCUM;
+    this.ledRing.style.strokeDashoffset = CIRCUM * (1 - ratio);
   }
-  setIcon(symbol, color) {
-    this.looperIcon.textContent = symbol;
-    this.looperIcon.style.color = color || '#fff';
-  }
+  setIcon(symbol, color) { this.looperIcon.textContent = symbol; this.looperIcon.style.color = color || '#fff'; }
   setDisplay(text) { this.stateDisplay.textContent = text; }
 
-  updateUI() {
-    // Update UI based on current state
-    switch (this.state) {
-      case 'ready':
-        this.setLED('green'); this.setRingProgress(0);
-        this.setIcon('▶'); this.setDisplay('Ready');
-        break;
-      case 'recording':
-        this.setLED('red'); this.setIcon('⦿', '#e11d48');
-        this.setDisplay('Recording...');
-        break;
-      case 'playing':
-        this.setLED('green'); this.setIcon('▶');
-        this.setDisplay('Playing');
-        break;
-      case 'overdub':
-        this.setLED('orange'); this.setIcon('⦿', '#f59e0b');
-        this.setDisplay('Overdubbing');
-        break;
-      case 'stopped':
-        this.setLED('gray'); this.setRingProgress(0);
-        this.setIcon('▶', '#aaa'); this.setDisplay('Stopped');
-        break;
-      case 'waiting':
-        this.setLED('gray'); this.setRingProgress(0);
-        this.setIcon('⏳', '#aaa'); this.setDisplay('Waiting for sync...');
-        break;
+  updateUI(){
+    switch(this.state){
+      case 'ready': this.setLED('green'); this.setRingProgress(0); this.setIcon('▶'); this.setDisplay('Ready'); break;
+      case 'recording': this.setLED('red'); this.setIcon('⦿','#e11d48'); this.setDisplay('Recording...'); break;
+      case 'playing': this.setLED('green'); this.setIcon('▶'); this.setDisplay('Playing'); break;
+      case 'overdub': this.setLED('orange'); this.setIcon('⦿','#f59e0b'); this.setDisplay('Overdubbing'); break;
+      case 'stopped': this.setLED('gray'); this.setRingProgress(0); this.setIcon('▶','#aaa'); this.setDisplay('Stopped'); break;
+      case 'waiting': this.setLED('gray'); this.setRingProgress(0); this.setIcon('⏳','#aaa'); this.setDisplay('Waiting for sync...'); break;
     }
-    // Disable UI if needed (e.g. slave waiting for master)
     if (this.uiDisabled) {
       this.mainBtn.disabled = true; this.stopBtn.disabled = true;
       this.mainBtn.classList.add('disabled-btn'); this.stopBtn.classList.add('disabled-btn');
@@ -281,82 +236,121 @@ class Looper {
       this.mainBtn.classList.remove('disabled-btn'); this.stopBtn.classList.remove('disabled-btn');
     }
   }
-  setDisabled(val) { this.uiDisabled = val; this.updateUI(); }
+  setDisabled(val){ this.uiDisabled = val; this.updateUI(); }
 
-  // Handle main button based on state
-  async handleMainButton() {
-    if (this.state === 'ready') {
-      await this.phaseLockedRecording();
-    } else if (this.state === 'recording') {
-      await this.stopRecordingAndPlay();
-    } else if (this.state === 'playing') {
-      this.armOverdub();
-    } else if (this.state === 'overdub') {
-      // Already armed; do nothing (we auto-stop after one loop)
+  async handleMainButton(){
+    if (this.state === 'ready') await this.phaseLockedRecording();
+    else if (this.state === 'recording') await this.stopRecordingAndPlay();
+    else if (this.state === 'playing') this.armOverdub();
+    else if (this.state === 'overdub') { /* already armed, will auto-stop after loop */ }
+  }
+
+  // Create AudioWorkletNode lazily and install message handler
+  _ensureRecorderNode() {
+    if (!useWorklet) return false;
+    if (this.recorder) return true;
+    try {
+      this.recorder = new AudioWorkletNode(audioCtx, 'recorder-processor', { numberOfInputs:1, numberOfOutputs:0, channelCount:1 });
+      // message handler: route dump responses according to current state (initial vs overdub)
+      this.recorder.port.onmessage = (e) => {
+        const data = e.data || {};
+        if (data.cmd === 'dump') {
+          // convert transferred channels to Float32Array (mono expected)
+          const channels = data.channels || [];
+          if (channels.length === 0) {
+            // empty recording
+            if (this.state === 'overdub' && this.baseBuffer) {
+              this._finalizeOverdub(new Float32Array(0));
+            } else {
+              this._finalizeRecording(new Float32Array(0));
+            }
+          } else {
+            let raw = channels[0];
+            const firstFrame = data.firstBlockFrame || 0;
+            const startedAtFrame = data.startedAtFrame || 0;
+            const stoppedAtFrame = data.stoppedAtFrame || (startedAtFrame + raw.length);
+            const startOffset = Math.max(0, startedAtFrame - firstFrame);
+            const endOffset = raw.length - (stoppedAtFrame - firstFrame);
+            const sliced = raw.slice(startOffset, endOffset);
+            if (this.state === 'overdub' && this.baseBuffer) {
+              this._finalizeOverdub(sliced);
+            } else {
+              this._finalizeRecording(sliced);
+            }
+          }
+        }
+      };
+      this.recorderConnected = false;
+      return true;
+    } catch (err) {
+      console.warn('Failed to create recorder node:', err);
+      this.recorder = null;
+      return false;
     }
   }
 
-  // ===== Recording =====
+  // ===== Recording flow =====
   async phaseLockedRecording() {
-    // If master or master not set, start immediately
+    if (!processedStream) await ensureMic();
     if (this.index === 1 || !masterIsSet) {
       await this.startRecording();
       return;
     }
-    // Slave: wait for next master-loop boundary
     const targetLen = masterLoopDuration * this.divider;
-    this.state = 'waiting'; this.updateUI();
-    this.setDisplay('Waiting for sync...');
+    this.state = 'waiting'; this.updateUI(); this.setDisplay('Waiting for sync...');
     const now = audioCtx.currentTime;
     const master = loopers[1];
     const masterElapsed = (now - master.loopStartTime) % masterLoopDuration;
     const timeToNext = masterLoopDuration - masterElapsed;
-    // Schedule start after delay
     setTimeout(async () => {
       await this.startRecording();
-      // Also schedule forced stop at target length (safety)
-      setTimeout(() => {
-        if (this.state === 'recording') this.stopRecordingAndPlay();
-      }, targetLen * 1000 + 20);
+      setTimeout(()=> { if (this.state === 'recording') this.stopRecordingAndPlay(); }, targetLen * 1000 + 20);
     }, timeToNext * 1000);
   }
 
   async startRecording() {
-    this.state = 'recording';
-    this.updateUI();
-    this.setRingProgress(0);
+    this.state = 'recording'; this.updateUI(); this.setRingProgress(0);
     this.chunks = [];
 
-    // Connect recorder node if using AudioWorklet
-    if (useWorklet && this.recorder && !this.recorderConnected) {
-      dryGain.connect(this.recorder);
-      wetGain.connect(this.recorder);
-      this.recorderConnected = true;
+    // Try worklet path (create recorder node lazily)
+    if (useWorklet) {
+      const ok = this._ensureRecorderNode();
+      if (ok) {
+        // connect the mic FX graph into the recorder node (if not already)
+        if (!this.recorderConnected) {
+          try {
+            dryGain.connect(this.recorder);
+            wetGain.connect(this.recorder);
+            this.recorderConnected = true;
+          } catch(e) { console.warn('connect to recorder failed', e); }
+        }
+        // arm at current frame (record until stopAtFrame posted)
+        const startFrame = Math.ceil(audioCtx.currentTime * audioCtx.sampleRate);
+        this.recorder.port.postMessage({ cmd:'reset' });
+        this.recorder.port.postMessage({ cmd:'armAtFrame', frame: startFrame });
+        // we'll call stopAtFrame when user ends recording
+        return;
+      }
+      // if recorder creation failed, fall back to MediaRecorder automatically
     }
 
-    if (useWorklet && this.recorder) {
-      // **Worklet path:** arm recording immediately
-      const startFrame = Math.ceil(audioCtx.currentTime * audioCtx.sampleRate);
-      this.recorder.port.postMessage({ cmd:'reset' });
-      this.recorder.port.postMessage({ cmd:'armAtFrame', frame: startFrame });
-    } else {
-      // **MediaRecorder path:** start recording the processed stream
-      this.mediaRecorder = new MediaRecorder(processedStream);
-      this.mediaRecorder.ondataavailable = e => { if (e.data.size) this.chunks.push(e.data); };
-      this.mediaRecorder.start();
-      // Visualize recording progress (max 12s or loop length)
-      const startTime = Date.now();
-      const maxTime = this.index >= 2 && masterLoopDuration ? masterLoopDuration * this.divider * 1000 : 12000;
-      const animate = () => {
-        if (this.state === 'recording') {
-          const elapsed = (Date.now() - startTime) / maxTime;
-          this.setRingProgress(Math.min(elapsed, 1));
-          if (elapsed < 1) requestAnimationFrame(animate);
-          else this.stopRecordingAndPlay();
-        }
-      };
-      animate();
-    }
+    // Fallback MediaRecorder path (still works; less precise)
+    this.mediaRecorder = new MediaRecorder(processedStream);
+    this.mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
+    this.mediaRecorder.start();
+
+    // progress visual (safety max)
+    const startTime = Date.now();
+    const maxTime = this.index >= 2 && masterLoopDuration ? masterLoopDuration * this.divider * 1000 : 12000;
+    const animate = () => {
+      if (this.state === 'recording') {
+        const elapsed = (Date.now() - startTime) / maxTime;
+        this.setRingProgress(Math.min(elapsed, 1));
+        if (elapsed < 1) requestAnimationFrame(animate);
+        else this.stopRecordingAndPlay();
+      }
+    };
+    animate();
   }
 
   async stopRecordingAndPlay() {
@@ -364,31 +358,29 @@ class Looper {
     this.state = 'playing'; this.updateUI();
 
     if (useWorklet && this.recorder) {
-      // **Worklet path:** stop and dump buffers
+      // stop at present frame and request dump
       const stopFrame = Math.ceil(audioCtx.currentTime * audioCtx.sampleRate);
       this.recorder.port.postMessage({ cmd:'stopAtFrame', frame: stopFrame });
-      // Give a tiny delay for final block capture, then request dump
-      setTimeout(() => {
-        this.recorder.port.postMessage({ cmd:'dump' });
-      }, 20);
-      // The onmessage handler will call _finalizeRecording()
-    } else {
-      // **MediaRecorder path:** stop recorder
+      setTimeout(()=>{ try{ this.recorder.port.postMessage({ cmd:'dump' }); }catch(e){console.warn('dump err',e);} }, 20);
+      // result handled via recorder.port.onmessage -> _finalizeRecording / _finalizeOverdub
+      return;
+    }
+
+    // MediaRecorder fallback: stop and decode
+    if (this.mediaRecorder) {
       this.mediaRecorder.onstop = async () => {
         const blob = new Blob(this.chunks, { type: 'audio/webm' });
-        const arrayBuf = await blob.arrayBuffer();
-        audioCtx.decodeAudioData(arrayBuf, (buffer) => {
-          // Save base buffer for overdub mixing
+        const arr = await blob.arrayBuffer();
+        audioCtx.decodeAudioData(arr, (buffer) => {
+          // base buffer set for initial recording
           this.baseBuffer = buffer;
           this.loopBuffer = buffer;
           this.loopDuration = buffer.duration;
           if (this.index === 1) {
-            // Master track set loop length and BPM
             masterLoopDuration = this.loopDuration;
-            masterBPM = Math.round(60 / masterLoopDuration * 4); // assuming 4/4
+            masterBPM = Math.round(60 / masterLoopDuration * 4);
             masterIsSet = true;
             bpmLabel.textContent = `BPM: ${masterBPM}`;
-            // Enable slave tracks
             for (let k = 2; k <= 4; k++) loopers[k].setDisabled(false);
           }
           this.startPlayback(true);
@@ -398,16 +390,15 @@ class Looper {
     }
   }
 
-  // Finalize after AudioWorklet dump (slices are raw PCM)
+  // Called by worklet dump handler when this is a base recording (not overdub)
   _finalizeRecording(floatArray) {
-    // Create AudioBuffer from Float32Array
-    const length = floatArray.length;
-    const buffer = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
-    buffer.copyToChannel(floatArray, 0, 0);
-    // Save base buffer
-    this.baseBuffer = buffer;
-    this.loopBuffer = buffer;
-    this.loopDuration = buffer.duration;
+    // floatArray is Float32Array PCM
+    const length = floatArray.length || 0;
+    const buff = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
+    if (length) buff.copyToChannel(floatArray, 0, 0);
+    this.baseBuffer = buff;
+    this.loopBuffer = buff;
+    this.loopDuration = buff.duration;
     if (this.index === 1) {
       masterLoopDuration = this.loopDuration;
       masterBPM = Math.round(60 / masterLoopDuration * 4);
@@ -418,18 +409,14 @@ class Looper {
     this.startPlayback(true);
   }
 
-  // Start loop playback, optionally re-aligning to master
   startPlayback(resetPhase) {
     if (!this.loopBuffer) return;
-    if (this.sourceNode) {
-      try { this.sourceNode.stop(); } catch(e) { /* ignore */ }
-    }
+    if (this.sourceNode) try{ this.sourceNode.stop(); } catch(e) {}
     this.sourceNode = audioCtx.createBufferSource();
     this.sourceNode.buffer = this.loopBuffer;
     this.sourceNode.loop = true;
     this.sourceNode.connect(audioCtx.destination);
 
-    // Align slave track to master's loop phase
     let offset = 0;
     if (this.index !== 1 && masterIsSet && loopers[1].sourceNode) {
       const masterNow = audioCtx.currentTime - loopers[1].loopStartTime;
@@ -438,194 +425,173 @@ class Looper {
     }
     this.loopStartTime = audioCtx.currentTime - offset;
     this.sourceNode.start(0, offset);
-    this.state = 'playing';
-    this.updateUI();
+    this.state = 'playing'; this.updateUI();
     this.animateProgress();
   }
 
-  // Stop and restart (resume) playback
-  stopPlayback() {
-    if (this.sourceNode) { try { this.sourceNode.stop(); } catch(e) {} }
-    this.state = 'stopped'; this.updateUI();
-  }
-  resumePlayback() { this.startPlayback(); }
+  stopPlayback() { if (this.sourceNode) try{ this.sourceNode.stop(); }catch(e){}; this.state='stopped'; this.updateUI(); }
+  resumePlayback(){ this.startPlayback(); }
 
-  // Begin overdub: schedule recording at next loop boundary
+  // === Overdub ===
   armOverdub() {
     if (this.state !== 'playing') return;
-    this.state = 'overdub'; this.updateUI();
+    this.state='overdub'; this.updateUI();
     const now = audioCtx.currentTime;
-    const loopStart = this.loopStartTime;
-    const elapsed = (now - loopStart) % this.loopDuration;
+    const elapsed = (now - this.loopStartTime) % this.loopDuration;
     const delay = this.loopDuration - elapsed;
-    // Schedule actual recording
-    setTimeout(() => this.startOverdubRecording(), delay * 1000);
+    setTimeout(()=> this.startOverdubRecording(), delay * 1000);
   }
 
-  startOverdubRecording() {
-    // Start a recording of exactly one loop cycle
-    if (useWorklet && this.recorder) {
-      const nowFrame = Math.ceil(audioCtx.currentTime * audioCtx.sampleRate);
-      const elapsedFrames = (nowFrame - Math.round(this.loopStartTime * audioCtx.sampleRate)) % Math.round(this.loopDuration * audioCtx.sampleRate);
-      const armFrame = nowFrame + (Math.round(this.loopDuration * audioCtx.sampleRate) - elapsedFrames);
-      const stopFrame = armFrame + Math.round(this.loopDuration * audioCtx.sampleRate);
-      // Reset recorder and arm/stop
-      this.recorder.port.postMessage({ cmd:'reset' });
-      this.recorder.port.postMessage({ cmd:'armAtFrame', frame: armFrame });
-      this.recorder.port.postMessage({ cmd:'stopAtFrame', frame: stopFrame });
-      // Dump after recording
-      setTimeout(() => {
-        this.recorder.port.postMessage({ cmd:'dump' });
-      }, this.loopDuration * 1000 + 50);
-    } else {
-      // Fallback: use MediaRecorder over the next loop duration
-      this.overdubChunks = [];
-      this.mediaRecorder = new MediaRecorder(processedStream);
-      this.mediaRecorder.ondataavailable = e => { if (e.data.size) this.overdubChunks.push(e.data); };
-      this.mediaRecorder.start();
-      setTimeout(() => this.finishOverdub(), this.loopDuration * 1000);
-    }
-  }
-
-  async finishOverdub() {
-    // Called after one loop duration for overdub
+  startOverdubRecording(){
+    if (!this.loopBuffer) return;
+    // ensure recorder exists if using worklet
     if (useWorklet) {
-      // Worklet path: data will arrive via onmessage handler after dump
-      // (We handle it in _finalizeOverdub)
-    } else {
-      if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-        this.mediaRecorder.onstop = async () => {
-          const odBlob = new Blob(this.overdubChunks, { type: 'audio/webm' });
-          const origBuf = this.loopBuffer;
-          const arrayBuf = await odBlob.arrayBuffer();
-          audioCtx.decodeAudioData(arrayBuf, (newBuf) => {
-            this._mixOverdub(newBuf.getChannelData(0));
-          });
-        };
-        this.mediaRecorder.stop();
+      const ok = this._ensureRecorderNode();
+      if (ok) {
+        if (!this.recorderConnected) {
+          try { dryGain.connect(this.recorder); wetGain.connect(this.recorder); this.recorderConnected=true; }
+          catch(e){ console.warn('connect recorder failed', e); }
+        }
+        const nowFrame = Math.ceil(audioCtx.currentTime * audioCtx.sampleRate);
+        const loopFrames = Math.round(this.loopDuration * audioCtx.sampleRate);
+        // compute when the next loop boundary will occur in frames
+        const loopStartFrame = Math.round(this.loopStartTime * audioCtx.sampleRate);
+        const elapsedFrames = (nowFrame - loopStartFrame) % loopFrames;
+        const armFrame = nowFrame + (loopFrames - elapsedFrames);
+        const stopFrame = armFrame + loopFrames;
+        this.recorder.port.postMessage({ cmd:'reset' });
+        this.recorder.port.postMessage({ cmd:'armAtFrame', frame: armFrame });
+        this.recorder.port.postMessage({ cmd:'stopAtFrame', frame: stopFrame });
+        // schedule dump after full loop (with tiny headroom)
+        setTimeout(()=> { try{ this.recorder.port.postMessage({ cmd:'dump' }); } catch(e){ console.warn('dump err', e); } }, this.loopDuration * 1000 + 60);
+        return;
       }
+      // fall back to MediaRecorder below
+    }
+
+    // MediaRecorder fallback: record for exactly one loop duration
+    this.overdubChunks = [];
+    this.mediaRecorder = new MediaRecorder(processedStream);
+    this.mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) this.overdubChunks.push(e.data); };
+    this.mediaRecorder.start();
+    setTimeout(()=> this.finishOverdub(), this.loopDuration * 1000);
+  }
+
+  // MediaRecorder path completes overdub recording here
+  async finishOverdub() {
+    if (!this.mediaRecorder) return;
+    if (this.mediaRecorder.state === 'recording') {
+      this.mediaRecorder.onstop = async () => {
+        const odBlob = new Blob(this.overdubChunks, { type: 'audio/webm' });
+        const arr = await odBlob.arrayBuffer();
+        audioCtx.decodeAudioData(arr, (newBuf) => {
+          // mix in the overdub channel (mono assumed)
+          this._mixOverdub(newBuf.getChannelData(0));
+        });
+      };
+      this.mediaRecorder.stop();
     }
   }
 
-  // For AudioWorklet: finalize after overdub dump
+  // For worklet dumps that are overdubs
   _finalizeOverdub(floatArray) {
     this._mixOverdub(floatArray);
   }
 
-  // Mix a new overdub Float32Array into the loop
+  // mixing routine: baseBuffer + existing layers + newData -> new loopBuffer
   _mixOverdub(newData) {
     if (!this.baseBuffer) return;
-    const baseData = this.baseBuffer.getChannelData(0);
-    const length = baseData.length;
-    // Add newData to base + any existing overdubs
-    let out = new Float32Array(length);
-    // Start with base buffer
-    for (let i = 0; i < length; i++) {
-      out[i] = baseData[i];
+    const base = this.baseBuffer.getChannelData(0);
+    const len = base.length;
+    // normalize sizes: newData length should equal len, but clip/zero-pad if needed
+    const layer = new Float32Array(len);
+    layer.set(newData.subarray(0, Math.min(newData.length, len)));
+    if (newData.length < len) {
+      // zero tail remains
     }
-    // Mix previous overdubs
-    for (let layer of this.overdubBuffers) {
-      for (let i = 0; i < length; i++) {
-        out[i] += layer[i] || 0;
-      }
+    // Rebuild output by summing base + existing overdubs + new layer
+    const out = new Float32Array(len);
+    for (let i=0;i<len;i++) out[i] = base[i];
+    for (let existing of this.overdubBuffers) {
+      for (let i=0;i<len;i++) out[i] += existing[i] || 0;
     }
-    // Mix new overdub layer
-    for (let i = 0; i < length; i++) {
-      out[i] += newData[i] || 0;
-    }
-    // Save the new overdub layer for undo
-    this.overdubBuffers.push(newData);
-    // Create a new AudioBuffer for playback
-    const newBuf = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
+    for (let i=0;i<len;i++) out[i] += layer[i] || 0;
+    // Save this layer for undo
+    this.overdubBuffers.push(layer);
+    // Create new AudioBuffer for playback
+    const newBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
     newBuf.copyToChannel(out, 0, 0);
     this.loopBuffer = newBuf;
     this.loopDuration = newBuf.duration;
-    // Restart playback to include new layer (aligned)
+    // restart playback aligned
     this.startPlayback(true);
   }
 
-  // Undo the latest overdub layer
   undoOverdub() {
     if (this.overdubBuffers.length === 0) return;
     this.overdubBuffers.pop();
-    // Recompute mix: base + remaining layers
-    const baseData = this.baseBuffer.getChannelData(0);
-    const length = baseData.length;
-    let out = new Float32Array(length);
-    for (let i = 0; i < length; i++) out[i] = baseData[i];
+    // recompute mix
+    const base = this.baseBuffer.getChannelData(0);
+    const len = base.length;
+    const out = new Float32Array(len);
+    for (let i=0;i<len;i++) out[i] = base[i];
     for (let layer of this.overdubBuffers) {
-      for (let i = 0; i < length; i++) out[i] += layer[i] || 0;
+      for (let i=0;i<len;i++) out[i] += layer[i] || 0;
     }
-    const newBuf = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
+    const newBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
     newBuf.copyToChannel(out, 0, 0);
     this.loopBuffer = newBuf;
     this.loopDuration = newBuf.duration;
-    // Restart playback to reflect removal
     this.startPlayback(true);
   }
 
-  // Clear the loop entirely (long-hold Stop)
   clearLoop() {
-    if (this.sourceNode) { try { this.sourceNode.stop(); } catch(e) {} }
+    if (this.sourceNode) try{ this.sourceNode.stop(); }catch(e){}
     this.loopBuffer = null; this.loopDuration = 0;
     this.baseBuffer = null; this.overdubBuffers = [];
     this.state = 'ready'; this.updateUI();
     if (this.index === 1) {
-      // If master is cleared, reset all
       masterLoopDuration = null; masterBPM = null; masterIsSet = false;
       bpmLabel.textContent = `BPM: --`;
-      for (let k = 2; k <= 4; k++) {
-        loopers[k].setDisabled(true);
-        loopers[k].clearLoop();
-      }
+      for (let k=2;k<=4;k++) { loopers[k].setDisabled(true); loopers[k].clearLoop(); }
     }
   }
 
-  // Progress ring animation for playback
   animateProgress() {
     if (this.state === 'playing' && this.loopDuration > 0 && this.sourceNode) {
       const pos = (audioCtx.currentTime - this.loopStartTime) % this.loopDuration;
       this.setRingProgress(pos / this.loopDuration);
-      requestAnimationFrame(() => this.animateProgress());
+      requestAnimationFrame(()=>this.animateProgress());
     } else {
       this.setRingProgress(0);
     }
   }
 }
 
-// Initialize loopers (keys W/S, E/D, R/F, T/G)
+// Initialize loopers
 const keyMap = [
-  { rec: 'w', stop: 's' },
-  { rec: 'e', stop: 'd' },
-  { rec: 'r', stop: 'f' },
-  { rec: 't', stop: 'g' }
+  { rec:'w', stop:'s' },
+  { rec:'e', stop:'d' },
+  { rec:'r', stop:'f' },
+  { rec:'t', stop:'g' }
 ];
 window.loopers = [];
-for (let i = 1; i <= 4; i++) {
-  loopers[i] = new Looper(i, keyMap[i-1].rec, keyMap[i-1].stop);
-}
+for (let i=1;i<=4;i++) loopers[i] = new Looper(i, keyMap[i-1].rec, keyMap[i-1].stop);
 
-// Keyboard shortcuts: record/stop per track
+// keyboard shortcuts
 document.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase();
-  for (let i = 1; i <= 4; i++) {
-    if (key === keyMap[i-1].rec) {
-      loopers[i].mainBtn.click();
-      e.preventDefault();
-    }
+  for (let i=1;i<=4;i++){
+    if (key === keyMap[i-1].rec) { loopers[i].mainBtn.click(); e.preventDefault(); }
     if (key === keyMap[i-1].stop) {
-      if (loopers[i].state === 'playing' || loopers[i].state === 'overdub') {
-        loopers[i].stopPlayback();
-      } else if (loopers[i].state === 'stopped') {
-        loopers[i].resumePlayback();
-      }
+      if (loopers[i].state === 'playing' || loopers[i].state === 'overdub') loopers[i].stopPlayback();
+      else if (loopers[i].state === 'stopped') loopers[i].resumePlayback();
       e.preventDefault();
     }
   }
 });
 
-// ====== Reverb and Delay UI Controls ======
-// Reverb knob: adjusts mix between dryGain and wetGain
+// Reverb knob wiring
 const reverbKnob = document.getElementById('reverbKnob');
 const knobIndicator = document.getElementById('knobIndicator');
 const reverbValueDisplay = document.getElementById('reverbValue');
@@ -634,19 +600,21 @@ addKnobDragHandler(
   () => reverbLevel,
   (val) => {
     reverbLevel = Math.max(0, Math.min(100, Math.round(val)));
-    dryGain.gain.value = (100 - reverbLevel) / 100;
-    wetGain.gain.value = reverbLevel / 100;
+    if (dryGain && wetGain) {
+      dryGain.gain.value = (100 - reverbLevel) / 100;
+      wetGain.gain.value = reverbLevel / 100;
+    }
     reverbValueDisplay.textContent = reverbLevel + '%';
   },
   reverbValueDisplay, knobIndicator, 0, 100, 2.7, '%'
 );
 if (knobIndicator) knobIndicator.style.transform = 'translateX(-50%) rotate(-135deg)';
 
-// Delay knob: sets delayTime
+// Delay knob
 const delayKnob = document.getElementById('delayKnob');
-const delayIndicator = document.getElementById('delayKnobIndicator');
+const delayKnobIndicator = document.getElementById('delayKnobIndicator');
 const delayValueDisplay = document.getElementById('delayValue');
-let delayMaxMs = 1000; // 0–1000 ms
+let delayMaxMs = 1000;
 addKnobDragHandler(
   delayKnob,
   () => Math.round(delayTime * 1000),
@@ -656,17 +624,14 @@ addKnobDragHandler(
     if (delayNode) delayNode.delayTime.value = delayTime;
     delayValueDisplay.textContent = newVal + ' ms';
   },
-  delayValueDisplay, delayIndicator, 0, delayMaxMs, 0.27, ' ms'
+  delayValueDisplay, delayKnobIndicator, 0, delayMaxMs, 0.27, ' ms'
 );
-if (delayIndicator) delayIndicator.style.transform = 'translateX(-50%) rotate(-135deg)';
+if (delayKnobIndicator) delayKnobIndicator.style.transform = 'translateX(-50%) rotate(-135deg)';
 
-// Resume AudioContext on first user interaction
-window.addEventListener('click', () => {
+// Resume audio on first gesture
+function resumeAudio() {
   if (audioCtx.state === 'suspended') { audioCtx.resume(); hideMsg(); }
-}, { once: true });
-window.addEventListener('touchstart', () => {
-  if (audioCtx.state === 'suspended') { audioCtx.resume(); hideMsg(); }
-}, { once: true });
-if (audioCtx.state === 'suspended') {
-  showMsg("👆 Tap anywhere to start audio!", "#22ff88");
 }
+window.addEventListener('click', resumeAudio, { once: true });
+window.addEventListener('touchstart', resumeAudio, { once: true });
+if (audioCtx.state === 'suspended') showMsg("👆 Tap anywhere to start audio!", "#22ff88");
